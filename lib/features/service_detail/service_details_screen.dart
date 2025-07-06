@@ -1,99 +1,98 @@
-// lib/screens/service_details_screen.dart
+// lib/screens/service_detail_screen.dart
 
+import 'package:easy_book/core/models/booking_status.dart';
+import 'package:easy_book/core/models/service.dart';
+import 'package:easy_book/features/service_detail/service_detail_view_model.dart';
+import 'package:easy_book/screens/booking_confirmation_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import 'service_detail_state.dart';
-import 'service_detail_view_model.dart';
-import '../../screens/booking_confirmation_screen.dart';
+
 
 class ServiceDetailScreen extends ConsumerStatefulWidget {
   final String serviceId;
-  final String title;
-  final String duration;
-  final String price;
 
   const ServiceDetailScreen({
-    super.key,
+    Key? key,
     required this.serviceId,
-    required this.title,
-    required this.duration,
-    required this.price,
-  });
+  }) : super(key: key);
 
   @override
   ConsumerState<ServiceDetailScreen> createState() =>
       _ServiceDetailScreenState();
 }
 
-class _ServiceDetailScreenState
-    extends ConsumerState<ServiceDetailScreen> {
-  String selectedDateLabel = 'Dziś';
-  String? selectedTimeLabel;
-
-  // Hard-coded demo slots; you can later pull these from your VM or API.
-  final Map<String, List<String>> availableSlots = {
-    'Dziś': ['10:00', '11:30'],
-    'Jutro': ['13:00', '15:30'],
-    'Pn 22.04': ['09:00', '12:00', '14:00'],
-  };
-
-  bool get _canBook => selectedTimeLabel != null;
-
-  DateTime _dateFromLabel(String label) {
-    final now = DateTime.now();
-    if (label == 'Dziś') return now;
-    if (label == 'Jutro') return now.add(const Duration(days: 1));
-    // e.g. "Pn 22.04"
-    final parts = label.split(' ');
-    if (parts.length == 2) {
-      final parsed = DateFormat('dd.MM').parse(parts[1]);
-      return DateTime(now.year, parsed.month, parsed.day);
-    }
-    return now;
-  }
-
-  TimeOfDay _timeOfDay(String s) {
-    final parts = s.split(':');
-    return TimeOfDay(
-      hour: int.parse(parts[0]),
-      minute: int.parse(parts[1]),
-    );
-  }
+class _ServiceDetailScreenState extends ConsumerState<ServiceDetailScreen> {
+  String? _selectedDateLabel;
+  String? _selectedTimeLabel;
 
   @override
   void initState() {
     super.initState();
-    // initialize the VM with today
-    ref
-        .read(serviceDetailProvider(widget.serviceId).notifier)
-        .updateDate(_dateFromLabel(selectedDateLabel));
+    // Automatically pick the first date once slots load
+    ref.listen<AsyncValue<Map<String, List<String>>>>(
+      serviceDetailProvider(widget.serviceId).select((s) => s.slots),
+          (_, slots) => slots.whenData((map) {
+        final firstDate = map.keys.firstOrNull;
+        if (firstDate != null) {
+          setState(() {
+            _selectedDateLabel = firstDate;
+            _selectedTimeLabel = null;
+          });
+          ref
+              .read(serviceDetailProvider(widget.serviceId).notifier)
+              .updateSelectedDate(_parseDate(firstDate));
+        }
+      }),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(serviceDetailProvider(widget.serviceId));
-    final vm = ref.read(serviceDetailProvider(widget.serviceId).notifier);
+    final detailState = ref.watch(serviceDetailProvider(widget.serviceId));
+    final viewModel = ref.read(serviceDetailProvider(widget.serviceId).notifier);
+    final serviceState = detailState.service;
+    final slotsState = detailState.slots;
 
-    // Listen for success/error and react
+    // 1) Full-page loading
+    if (serviceState.isLoading || slotsState.isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    // 2) Full-page error
+    if (serviceState.hasError || slotsState.hasError) {
+      final error = serviceState.hasError
+          ? serviceState.error
+          : slotsState.error;
+      return Scaffold(
+        appBar: AppBar(title: const Text('Szczegóły usługi')),
+        body: Center(child: Text(error.toString())),
+      );
+    }
+
+    // 3) Both loaded ⇒ safe to call `.value!`
+    final Service service = serviceState.value!;
+    final Map<String, List<String>> slotsByDate = slotsState.value!;
+
+    // 4) Listen for booking result
     ref.listen<ServiceDetailState>(
       serviceDetailProvider(widget.serviceId),
           (previous, next) {
-        if (previous?.status != BookingStatus.success &&
-            next.status == BookingStatus.success) {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => BookingConfirmationScreen(
-                service: widget.title,
-                date: selectedDateLabel,
-                time: selectedTimeLabel!,
-              ),
+        if (previous?.status != BookingStatus.confirmed &&
+            next.status == BookingStatus.confirmed) {
+          Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => BookingConfirmationScreen(
+              service: service.title,
+              date: _selectedDateLabel!,
+              time: _selectedTimeLabel!,
             ),
-          );
-        } else if (previous?.status != BookingStatus.error &&
-            next.status == BookingStatus.error) {
+          ));
+        } else if (previous?.status != BookingStatus.cancelled &&
+            next.status == BookingStatus.cancelled) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(next.errorMessage ?? 'Wystąpił błąd')),
           );
@@ -102,197 +101,171 @@ class _ServiceDetailScreenState
     );
 
     return Scaffold(
-      bottomNavigationBar: Padding(
-        padding: const EdgeInsets.all(16),
-        child: ElevatedButton.icon(
-          icon: state.status == BookingStatus.loading
-              ? const SizedBox(
-            width: 16,
-            height: 16,
-            child:
-            CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-          )
-              : const Icon(Icons.calendar_today),
-          label: Text('Zarezerwuj za ${widget.price}'),
-          onPressed: _canBook && state.status != BookingStatus.loading
-              ? () => vm.book(
-            serviceTitle: widget.title,
-            price: widget.price,
-          )
-              : null,
-          style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(50)),
-        ),
+      bottomNavigationBar: _BookButton(
+        isLoading: detailState.status == BookingStatus.pending,
+        isEnabled:
+        _selectedDateLabel != null && _selectedTimeLabel != null,
+        onPressed: () {
+          viewModel.createBookingSlot(
+            serviceName: service.title,
+            priceCents: (double.parse(service.price) * 100).toInt(),
+          );
+        },
       ),
-      body: CustomScrollView(
-        slivers: [
-          _buildAppBar(),
-          SliverToBoxAdapter(child: _buildDetails(vm)),
+      body: NestedScrollView(
+        headerSliverBuilder: (_, __) => [
+          SliverAppBar(
+            expandedHeight: 220,
+            pinned: true,
+            flexibleSpace: FlexibleSpaceBar(
+              title: Text(service.title),
+              background: Image.network(service.imageUrl, fit: BoxFit.cover),
+            ),
+          ),
         ],
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('${service.duration} • ${service.price}',
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodyMedium
+                      ?.copyWith(color: Colors.grey)),
+              const SizedBox(height: 24),
+              Text(service.description),
+              const SizedBox(height: 32),
+              const Text('Wybierz termin',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              _SlotPicker(
+                slotsByDate: slotsByDate,
+                selectedDate: _selectedDateLabel,
+                selectedTime: _selectedTimeLabel,
+                onDateSelected: (label) {
+                  setState(() {
+                    _selectedDateLabel = label;
+                    _selectedTimeLabel = null;
+                  });
+                  viewModel.updateSelectedDate(_parseDate(label));
+                },
+                onTimeSelected: (label) {
+                  setState(() => _selectedTimeLabel = label);
+                  viewModel.updateSelectedTime(_parseTime(label));
+                },
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
-  SliverAppBar _buildAppBar() => SliverAppBar(
-    expandedHeight: 220,
-    pinned: true,
-    flexibleSpace: FlexibleSpaceBar(
-      title: Text(widget.title),
-      background: Image.network(
-        'https://via.placeholder.com/400x300',
-        fit: BoxFit.cover,
-      ),
-    ),
-  );
+  DateTime _parseDate(String label) {
+    final now = DateTime.now();
+    if (label == 'Dziś') return now;
+    if (label == 'Jutro') return now.add(const Duration(days: 1));
+    final parts = label.split(' ');
+    if (parts.length == 2) {
+      final parsed = DateFormat('dd.MM').parse(parts[1]);
+      return DateTime(now.year, parsed.month, parsed.day);
+    }
+    return now;
+  }
 
-  Widget _buildDetails(ServiceDetailViewModel vm) {
+  TimeOfDay _parseTime(String label) {
+    final parts = label.split(':');
+    return TimeOfDay(
+      hour: int.parse(parts[0]),
+      minute: int.parse(parts[1]),
+    );
+  }
+}
+
+class _BookButton extends StatelessWidget {
+  final bool isLoading;
+  final bool isEnabled;
+  final VoidCallback onPressed;
+
+  const _BookButton({
+    Key? key,
+    required this.isLoading,
+    required this.isEnabled,
+    required this.onPressed,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.all(16),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(
-          '${widget.duration} • ${widget.price}',
-          style: const TextStyle(fontSize: 16, color: Colors.grey),
-        ),
-        const SizedBox(height: 16),
-        const Text(
-          'Opis usługi',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 8),
-        const Text('Deep tissue massage...'),
-        const SizedBox(height: 24),
-        _buildInfoSection(),
-        const SizedBox(height: 32),
-        _buildPerformer(),
-        const SizedBox(height: 32),
-        _buildReviews(),
-        const SizedBox(height: 32),
-        const Text(
-          'Wybierz termin',
-          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 12),
-        _buildDateChips(vm),
-        const SizedBox(height: 12),
-        _buildTimeChips(vm),
-        const SizedBox(height: 24),
-      ]),
+      child: ElevatedButton.icon(
+        icon: isLoading
+            ? const SizedBox(
+          width: 16,
+          height: 16,
+          child:
+          CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+        )
+            : const Icon(Icons.calendar_today),
+        label: Text(isLoading ? 'Przetwarzanie…' : 'Zarezerwuj'),
+        onPressed: isEnabled && !isLoading ? onPressed : null,
+        style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(50)),
+      ),
     );
   }
+}
 
-  Widget _buildInfoSection() => Column(
-    children: [
-      Row(children: [
-        const Icon(Icons.timer),
-        const SizedBox(width: 8),
-        Text('Czas: ${widget.duration}'),
-      ]),
-      const SizedBox(height: 8),
-      Row(children: [
-        const Icon(Icons.euro),
-        const SizedBox(width: 8),
-        Text('Cena: ${widget.price}'),
-      ]),
-      const SizedBox(height: 8),
-      Row(children: const [
-        Icon(Icons.place),
-        SizedBox(width: 8),
-        Text('Green Studio, ul. Zielona 3'),
-      ]),
-    ],
-  );
+class _SlotPicker extends StatelessWidget {
+  final Map<String, List<String>> slotsByDate;
+  final String? selectedDate;
+  final String? selectedTime;
+  final ValueChanged<String> onDateSelected;
+  final ValueChanged<String> onTimeSelected;
 
-  Widget _buildPerformer() => Row(children: [
-    const CircleAvatar(
-      radius: 24,
-      backgroundImage: NetworkImage('https://via.placeholder.com/150'),
-    ),
-    const SizedBox(width: 12),
-    Column(crossAxisAlignment: CrossAxisAlignment.start, children: const [
-      Text('Anna Nowak', style: TextStyle(fontWeight: FontWeight.bold)),
-      Row(children: [
-        Icon(Icons.star, color: Colors.amber, size: 16),
-        Icon(Icons.star, color: Colors.amber, size: 16),
-        Icon(Icons.star, color: Colors.amber, size: 16),
-        Icon(Icons.star, color: Colors.amber, size: 16),
-        Icon(Icons.star_half, color: Colors.amber, size: 16),
-        SizedBox(width: 4),
-        Text('4.5 (32)', style: TextStyle(color: Colors.grey)),
-      ]),
-    ]),
-  ]);
+  const _SlotPicker({
+    Key? key,
+    required this.slotsByDate,
+    required this.selectedDate,
+    required this.selectedTime,
+    required this.onDateSelected,
+    required this.onTimeSelected,
+  }) : super(key: key);
 
-  Widget _buildReviews() => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      const Text(
-        'Opinie klientów',
-        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-      ),
-      const SizedBox(height: 12),
-      _buildReviewTile('Kasia W.', 'Świetna usługa, bardzo profesjonalna!'),
-      _buildReviewTile('Tomasz M.', 'Miła atmosfera i dokładność wykonania.'),
-      TextButton(onPressed: () {}, child: const Text('Zobacz wszystkie')),
-    ],
-  );
-
-  Widget _buildReviewTile(String name, String review) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Row(children: [
-        const Icon(Icons.person),
-        const SizedBox(width: 8),
-        Text(name, style: const TextStyle(fontWeight: FontWeight.bold)),
-      ]),
-      const SizedBox(height: 4),
-      Row(children: const [
-        Icon(Icons.star, color: Colors.amber),
-        Icon(Icons.star, color: Colors.amber),
-        Icon(Icons.star, color: Colors.amber),
-        Icon(Icons.star, color: Colors.amber),
-        Icon(Icons.star_border, color: Colors.amber),
-      ]),
-      const SizedBox(height: 4),
-      Text(review),
-      const Divider(height: 24),
-    ],
-  );
-
-  Widget _buildDateChips(ServiceDetailViewModel vm) => SizedBox(
-    height: 40,
-    child: ListView(
-      scrollDirection: Axis.horizontal,
-      children: availableSlots.keys.map((label) {
-        return Padding(
-          padding: const EdgeInsets.only(right: 8),
-          child: ChoiceChip(
-            label: Text(label),
-            selected: selectedDateLabel == label,
-            onSelected: (_) {
-              setState(() {
-                selectedDateLabel = label;
-                selectedTimeLabel = null;
-              });
-              vm.updateDate(_dateFromLabel(label));
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          height: 40,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            separatorBuilder: (_, __) => const SizedBox(width: 8),
+            itemCount: slotsByDate.length,
+            itemBuilder: (context, i) {
+              final dateLabel = slotsByDate.keys.elementAt(i);
+              return ChoiceChip(
+                label: Text(dateLabel),
+                selected: dateLabel == selectedDate,
+                onSelected: (_) => onDateSelected(dateLabel),
+              );
             },
           ),
-        );
-      }).toList(),
-    ),
-  );
-
-  Widget _buildTimeChips(ServiceDetailViewModel vm) => Wrap(
-    spacing: 8,
-    children: (availableSlots[selectedDateLabel] ?? []).map((time) {
-      return ChoiceChip(
-        label: Text(time),
-        selected: selectedTimeLabel == time,
-        onSelected: (_) {
-          setState(() {
-            selectedTimeLabel = time;
-          });
-          vm.updateTime(_timeOfDay(time));
-        },
-      );
-    }).toList(),
-  );
+        ),
+        const SizedBox(height: 12),
+        if (selectedDate != null)
+          Wrap(
+            spacing: 8,
+            children: slotsByDate[selectedDate!]!
+                .map((timeLabel) => ChoiceChip(
+              label: Text(timeLabel),
+              selected: timeLabel == selectedTime,
+              onSelected: (_) => onTimeSelected(timeLabel),
+            ))
+                .toList(),
+          ),
+      ],
+    );
+  }
 }

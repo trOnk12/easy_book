@@ -1,97 +1,121 @@
 // lib/features/service_detail/service_detail_view_model.dart
 
+import 'package:easy_book/core/service/booking_service.dart';
+import 'package:easy_book/core/service/services_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:intl/intl.dart';
 
 import '../../core/models/booking.dart';
-import '../../providers/booking_provider.dart';
+import '../../core/models/booking_status.dart';
+import '../../core/service/service_provider.dart'; // exports ServiceServiceProvider & bookingServiceProvider
 import 'service_detail_state.dart';
 
-/// A StateNotifierProvider.family so each screen instance gets its own VM + state.
-final serviceDetailProvider = StateNotifierProvider
-    .family<ServiceDetailViewModel, ServiceDetailState, String>(
-      (ref, serviceId) => ServiceDetailViewModel(ref, serviceId),
+/// Provides one ViewModel per serviceId.
+final serviceDetailProvider = StateNotifierProvider.family<
+    ServiceDetailViewModel,
+    ServiceDetailState,
+    String>(
+      (ref, serviceId) {
+    final serviceSvc = ref.read(serviceServiceProvider);
+    final bookingSvc = ref.read(bookingServiceProvider);
+    return ServiceDetailViewModel(serviceSvc, bookingSvc, serviceId)
+      ..loadService()
+      ..loadSlots();
+  },
 );
 
-/// The ViewModel handling all logic for ServiceDetailScreen.
 class ServiceDetailViewModel extends StateNotifier<ServiceDetailState> {
-  final Ref _ref;
+  final ServiceService _serviceService;
+  final BookingService _bookingService;
   final String _serviceId;
 
-  ServiceDetailViewModel(this._ref, this._serviceId)
-      : super(const ServiceDetailState());
+  ServiceDetailViewModel(
+      this._serviceService,
+      this._bookingService,
+      this._serviceId,
+      ) : super(const ServiceDetailState());
 
-  /// Called when the user picks a new date.
-  void updateDate(DateTime date) {
+  Future<void> loadService() async {
+    state = state.copyWith(service: const AsyncValue.loading());
+    try {
+      final svc = await _serviceService.fetchServiceById(_serviceId);
+      state = state.copyWith(service: AsyncValue.data(svc));
+    } catch (e, st) {
+      state = state.copyWith(service: AsyncValue.error(e, st));
+    }
+  }
+
+  Future<void> loadSlots() async {
+    state = state.copyWith(slots: const AsyncValue.loading());
+    try {
+      final slotMap =
+      await _serviceService.fetchAvailableSlots(_serviceId);
+      state = state.copyWith(slots: AsyncValue.data(slotMap));
+    } catch (e, st) {
+      state = state.copyWith(slots: AsyncValue.error(e, st));
+    }
+  }
+
+  void updateSelectedDate(DateTime date) {
     state = state.copyWith(
       selectedDate: date,
       selectedTime: null,
-      status: BookingStatus.idle,
+      status: BookingStatus.pending,
       errorMessage: null,
     );
   }
 
-  /// Called when the user picks a new time.
-  void updateTime(TimeOfDay time) {
+  void updateSelectedTime(TimeOfDay time) {
     state = state.copyWith(
       selectedTime: time,
-      status: BookingStatus.idle,
+      status: BookingStatus.pending,
       errorMessage: null,
     );
   }
 
-  /// Initiates the booking API call.
-  ///
-  /// [serviceTitle] and [price] come from the UI.
-  Future<void> book({
-    required String serviceTitle,
-    required String price,
+  Future<void> createBookingSlot({
+    required String serviceName,
+    required int priceCents,
   }) async {
-    // Guard: need both date & time
-    if (state.selectedDate == null || state.selectedTime == null) return;
+    final date = state.selectedDate;
+    final time = state.selectedTime;
+    if (date == null || time == null) return;
 
-    state = state.copyWith(status: BookingStatus.loading, errorMessage: null);
+    state = state.copyWith(status: BookingStatus.pending, errorMessage: null);
 
     try {
-      final user = Supabase.instance.client.auth.currentUser;
-      if (user == null) throw Exception('User not authenticated');
-
-      final dt = DateTime(
-        state.selectedDate!.year,
-        state.selectedDate!.month,
-        state.selectedDate!.day,
-        state.selectedTime!.hour,
-        state.selectedTime!.minute,
+      // combine date & time, then UTC
+      final localDateTime = DateTime(
+        date.year,
+        date.month,
+        date.day,
+        time.hour,
+        time.minute,
       );
+      final scheduledForUtc = localDateTime.toUtc();
 
       final booking = Booking(
         id: '',
-        userId: user.id,
-        serviceName: "test",
         serviceId: _serviceId,
-        date: dt,
-        time:
-        '${state.selectedTime!.hour.toString().padLeft(2, '0')}:${state.selectedTime!.minute.toString().padLeft(2, '0')}',
-        status: 'pending',
-        price: price,
+        serviceName: serviceName,
+        scheduledFor: scheduledForUtc,
+        status: BookingStatus.pending,
+        priceCents: priceCents,
       );
 
-      final success = await _ref
-          .read(bookingControllerProvider.notifier)
-          .createBooking(booking: booking);
-
-      if (success) {
-        state = state.copyWith(status: BookingStatus.success);
-      } else {
-        final err = _ref.read(bookingControllerProvider).error?.toString() ??
-            'Unknown error';
-        state = state.copyWith(
-            status: BookingStatus.error, errorMessage: err);
-      }
-    } catch (e) {
+      final success = await _bookingService.createBooking(booking);
       state = state.copyWith(
-          status: BookingStatus.error, errorMessage: e.toString());
+        status:
+        success ? BookingStatus.confirmed : BookingStatus.cancelled,
+        errorMessage:
+        success ? null : 'Nie udało się utworzyć rezerwacji.',
+      );
+    } catch (e, st) {
+      state = state.copyWith(
+        status: BookingStatus.cancelled,
+        errorMessage: e.toString(),
+      );
     }
   }
 }

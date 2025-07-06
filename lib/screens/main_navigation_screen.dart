@@ -1,6 +1,6 @@
+import 'package:easy_book/features/my_bookings/my_bookings_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:easy_book/screens/home_screen.dart';
-import 'package:easy_book/screens/my_bookings_screen.dart';
 
 class MainNavigationScreen extends StatefulWidget {
   const MainNavigationScreen({super.key});

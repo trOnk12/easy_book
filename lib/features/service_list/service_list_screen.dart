@@ -42,9 +42,6 @@ class ServiceListScreen extends ConsumerWidget {
                       MaterialPageRoute(
                         builder: (_) => ServiceDetailScreen(
                           serviceId: service.id,
-                          title: service.title,
-                          duration: service.duration,
-                          price: service.price,
                         ),
                       ),
                     );
@@ -64,10 +61,10 @@ class ServiceListItem extends StatelessWidget {
   final VoidCallback onTap;
 
   const ServiceListItem({
-    Key? key,
+    super.key,
     required this.service,
     required this.onTap,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -110,10 +107,9 @@ class _ErrorView extends StatelessWidget {
   final Future<void> Function() onRetry;
 
   const _ErrorView({
-    Key? key,
     required this.error,
     required this.onRetry,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -137,7 +133,7 @@ class _ErrorView extends StatelessWidget {
 }
 
 class _EmptyView extends StatelessWidget {
-  const _EmptyView({Key? key}) : super(key: key);
+  const _EmptyView();
 
   @override
   Widget build(BuildContext context) {
